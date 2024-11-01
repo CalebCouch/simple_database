@@ -11,11 +11,44 @@ use std::cmp::Ordering;
 
 use serde::{Serialize, Deserialize};
 
-#[derive(Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Clone)]
+pub struct F64 {inner: f64}
+
+impl F64 {
+    pub fn new(inner: f64) -> Self {
+        F64{inner}
+    }
+}
+
+impl std::hash::Hash for F64 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {state.write(&self.inner.to_le_bytes())}
+}
+impl PartialEq for F64 {
+    fn eq(&self, other: &Self) -> bool {matches!(self.inner.total_cmp(&other.inner), Ordering::Equal)}
+}
+impl Eq for F64 {}
+impl PartialOrd for F64 {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {Some(self.cmp(other))}
+}
+impl Ord for F64 {
+    fn cmp(&self, other: &Self) -> Ordering {self.inner.total_cmp(&other.inner)}
+}
+impl From<f64> for F64 {
+    fn from(item: f64) -> F64 {F64::new(item)}
+}
+
+impl std::fmt::Display for F64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.inner)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialOrd, Ord)]
 pub enum Value {
     I64(i64),
     U64(u64),
-    F64(f64),
+    Bytes(Vec<u8>),
+    F64(F64),
     r#String(String),
     Bool(bool),
     Array(Vec<Value>)
@@ -24,7 +57,8 @@ pub enum Value {
 impl Value {
     pub fn as_i64(&self) -> Option<&i64> {if let Value::I64(val) = &self {Some(val)} else {None}}
     pub fn as_u64(&self) -> Option<&u64> {if let Value::U64(val) = &self {Some(val)} else {None}}
-    pub fn as_f64(&self) -> Option<&f64> {if let Value::F64(val) = &self {Some(val)} else {None}}
+    pub fn as_bytes(&self) -> Option<&Vec<u8>> {if let Value::Bytes(val) = &self {Some(val)} else {None}}
+    pub fn as_f64(&self) -> Option<&F64> {if let Value::F64(val) = &self {Some(val)} else {None}}
     pub fn as_string(&self) -> Option<&String> {if let Value::r#String(val) = &self {Some(val)} else {None}}
     pub fn as_bool(&self) -> Option<&bool> {if let Value::Bool(val) = &self {Some(val)} else {None}}
     pub fn as_array(&self) -> Option<&Vec<Value>> {if let Value::Array(val) = &self {Some(val)} else {None}}
@@ -56,27 +90,30 @@ impl Value {
     }
 }
 
-impl PartialOrd for Value {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
         match self {
-            Value::I64(val) => other.as_i64().map(|oval| val.cmp(oval)),
-            Value::U64(val) => other.as_u64().map(|oval| val.cmp(oval)),
-            Value::F64(val) => other.as_f64().map(|oval| val.total_cmp(oval)),
-            Value::r#String(val) => other.as_string().map(|oval| val.cmp(oval)),
-            Value::Bool(val) => other.as_bool().map(|oval| val.cmp(oval)),
-            Value::Array(_) => None
-        }
+            Value::I64(val) => other.as_i64().map(|oval| val.eq(oval)),
+            Value::U64(val) => other.as_u64().map(|oval| val.eq(oval)),
+            Value::Bytes(val) => other.as_bytes().map(|oval| val.eq(oval)),
+            Value::F64(val) => other.as_f64().map(|oval| val.eq(oval)),
+            Value::r#String(val) => other.as_string().map(|oval| val.eq(oval)),
+            Value::Bool(val) => other.as_bool().map(|oval| val.eq(oval)),
+            Value::Array(val) => other.as_array().map(|oval| val.eq(oval))
+        }.unwrap_or(false)
     }
 }
+
+impl Eq for Value {}
 
 impl From<i64> for Value {fn from(v: i64) -> Self {Value::I64(v)}}
 impl From<u64> for Value {fn from(v: u64) -> Self {Value::U64(v)}}
 impl From<usize> for Value {fn from(v: usize) -> Self {Value::U64(v as u64)}}
 impl From<DateTime<Utc>> for Value {fn from(v: DateTime<Utc>) -> Self {Value::U64(v.timestamp() as u64)}}
-impl From<u8> for Value {fn from(v: u8) -> Self {Value::U64(v as u64)}}
-impl From<f64> for Value {fn from(v: f64) -> Self {Value::F64(v)}}
+impl From<F64> for Value {fn from(v: F64) -> Self {Value::F64(v)}}
 impl From<String> for Value {fn from(v: String) -> Self {Value::r#String(v)}}
 impl From<bool> for Value {fn from(v: bool) -> Self {Value::Bool(v)}}
+impl From<Vec<u8>> for Value {fn from(v: Vec<u8>) -> Self {Value::Bytes(v)}}
 impl<V: Into<Value>> From<Vec<V>> for Value {fn from(v: Vec<V>) -> Self {Value::Array(v.into_iter().map(|v| v.into()).collect())}}
 
 impl std::fmt::Debug for Value {
@@ -84,6 +121,7 @@ impl std::fmt::Debug for Value {
         match self {
             Value::I64(i) => write!(f, "{}", i),
             Value::U64(u) => write!(f, "{}", u),
+            Value::Bytes(u) => write!(f, "{}", hex::encode(u)),
             Value::F64(_f) => write!(f, "{}", _f),
             Value::r#String(s) => write!(f, "{}", s),
             Value::Bool(b) => write!(f, "{}", b),
@@ -258,7 +296,7 @@ impl<O: Indexable + Serialize + for<'a> Deserialize<'a>> Indexable for UuidKeyed
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Database {
     store: Box<dyn KeyValueStore>,
     location: PathBuf
@@ -274,28 +312,25 @@ impl Database {
         Ok(Database{store: Box::new(KVS::new(location.clone())?), location})
     }
 
-    pub fn get_raw(&self, path: Option<PathBuf>, pk: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        let path = path.unwrap_or_default();
-        Ok(self.store.get_partition(self.location.join(path).join(MAIN))
+    pub fn get_raw(&self, pk: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self.store.get_partition(PathBuf::from(MAIN))
             .map(|db| db.get(pk)).transpose()?.flatten())
     }
 
-    pub fn get<I: Indexable + for<'a> Deserialize<'a>>(&self, path: Option<PathBuf>, pk: &[u8]) -> Result<Option<I>, Error> {
-        Ok(self.get_raw(path, pk)?.map(|item| {
+    pub fn get<I: Indexable + for<'a> Deserialize<'a>>(&self, pk: &[u8]) -> Result<Option<I>, Error> {
+        Ok(self.get_raw(pk)?.map(|item| {
             serde_json::from_slice::<I>(&item)
         }).transpose()?)
     }
 
-    pub fn get_all<I: Indexable + for<'a> Deserialize<'a>>(&self, path: Option<PathBuf>) -> Result<Vec<I>, Error> {
-        let path = path.unwrap_or_default();
-        Ok(if let Some(db) = self.store.get_partition(self.location.join(path).join(MAIN)) {
+    pub fn get_all<I: Indexable + for<'a> Deserialize<'a>>(&self) -> Result<Vec<I>, Error> {
+        Ok(if let Some(db) = self.store.get_partition(PathBuf::from(MAIN)) {
             db.values()?.into_iter().map(|item| Ok::<I, Error>(serde_json::from_slice::<I>(&item)?)).collect::<Result<Vec<I>, Error>>()?
         } else {Vec::new()})
     }
 
-    pub fn keys(&self, path: Option<PathBuf>) -> Result<Vec<Vec<u8>>, Error> {
-        let path = path.unwrap_or_default();
-        Ok(if let Some(db) = self.store.get_partition(self.location.join(path).join(MAIN)) {
+    pub fn keys(&self) -> Result<Vec<Vec<u8>>, Error> {
+        Ok(if let Some(db) = self.store.get_partition(PathBuf::from(MAIN)) {
             db.keys()?
         } else {Vec::new()})
     }
@@ -324,11 +359,10 @@ impl Database {
         Ok(())
     }
 
-    pub fn set<I: Indexable + Serialize>(&mut self, path: Option<PathBuf>, item: &I) -> Result<(), Error> {
-        let path = path.unwrap_or_default();
+    pub fn set<I: Indexable + Serialize>(&mut self, item: &I) -> Result<(), Error> {
         let pk = item.primary_key();
-        self.delete(Some(path.clone()), &pk)?;
-        let db = self.store.partition(self.location.join(path.clone()))?;
+        self.delete(&pk)?;
+        let db = &mut self.store;
         let mut keys = item.secondary_keys();
         keys.insert(I::PRIMARY_KEY.to_string(), pk.clone().into());
         keys.insert("timestamp_stored".to_string(), Utc::now().into());
@@ -343,11 +377,12 @@ impl Database {
         Ok(())
     }
 
-    pub fn delete(&mut self, path: Option<PathBuf>, pk: &[u8]) -> Result<(), Error> {
-        let path = path.unwrap_or_default();
-        let db = self.store.partition(self.location.join(path))?;
+    pub fn delete(&mut self, pk: &[u8]) -> Result<(), Error> {
+        let db = &mut self.store;
         db.partition(PathBuf::from(MAIN))?.delete(pk)?;
-        if let Some(index) = db.partition(PathBuf::from(INDEX))?.get(pk)? {
+        let index_db = db.partition(PathBuf::from(INDEX))?;
+        if let Some(index) = index_db.get(pk)? {
+            index_db.delete(pk)?;
             let keys: Index = serde_json::from_slice(&index)?;
             for (key, value) in keys.iter() {
                 let partition = db.partition(PathBuf::from(&format!("__{}__", key)))?;
@@ -359,22 +394,31 @@ impl Database {
         Ok(())
     }
 
-    pub fn clear(&mut self, path: Option<PathBuf>) -> Result<(), Error> {
-        let path = path.unwrap_or_default();
-        self.store.partition(self.location.join(path))?.clear()?;
+    pub fn clear(&mut self) -> Result<(), Error> {
+        self.store.clear()?;
         Ok(())
     }
 
     pub fn query<I: Indexable + for<'a> Deserialize<'a>>(
         &self,
-        path: Option<PathBuf>,
         filters: &Filters,
         sort_options: Option<SortOptions>
     ) -> Result<(Vec<I>, Option<Vec<u8>>), Error> {
-        let path = path.unwrap_or_default();
         let sort_options = sort_options.unwrap_or(SortOptions::new(I::DEFAULT_SORT));
         let none = || Ok((Vec::new(), None));
-        let db = if let Some(p) = self.store.get_partition(self.location.join(path)) {p} else {return none();};
+        let db = &self.store;
+
+        if let Some(pk) = filters.iter().find_map(|(p, f)| {
+            if p == "primary_key" {
+                if let Filter::Cmp(Value::Bytes(value), CmpType::E) = f {
+                    return Some(value);
+                }
+            }
+            None
+        }) {
+            return Ok((self.get(pk)?.map(|r| vec![r]).unwrap_or(vec![]), None));
+        }
+
 
         let db_filters: Vec<String> = filters.iter().filter_map(|(p, f)|
             Some(p.to_string()).filter(|_| f.is_equal())
@@ -435,5 +479,23 @@ impl Database {
             ).collect::<Vec<I>>(),
             cursor))
         }
+    }
+}
+
+impl std::fmt::Debug for Database {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Database")
+        .field("location", &self.location())
+        .field("items", &self.store.get_partition(PathBuf::from(INDEX)).map(|index| {
+            let mut index = index.values().unwrap().into_iter().map(|keys|
+                serde_json::from_slice::<Index>(&keys).unwrap()
+              //.into_iter().map(|(key, value)|
+              //    (key, format!(
+              //).collect()
+            ).collect::<Vec<Index>>();
+            index.sort_by_key(|i| i.get("timestamp_stored").unwrap().clone());
+            index
+        }).unwrap_or_default())
+        .finish()
     }
 }
