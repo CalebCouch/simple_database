@@ -66,7 +66,7 @@ impl KeyValueStore for LevelStore {
         Ok(store)
     }
     fn partition(&mut self, path: PathBuf) -> Result<Box<&mut dyn KeyValueStore>, Error> {
-        Ok(if self.partitions.get(&path)).is_some() {
+        Ok(if self.partitions.get(&path).is_some() {
             Box::new(self.partitions.get_mut(&path).unwrap())
         } else {
             let mut partitions = deserialize::<Partitions>(
@@ -96,7 +96,7 @@ impl KeyValueStore for LevelStore {
         }
         Ok(())
     }
-    fn delete(&mut self, key: &[u8]) -> Result<bool, Error> {
+    fn delete(&mut self, key: &[u8]) -> Result<(), Error> {
         let result = self.db.get(ReadOptions::new(), LevelKey{key: key.to_vec()})?.is_some();
         self.db.delete(WriteOptions::new(), LevelKey{key: key.to_vec()})?;
         Ok(result)
