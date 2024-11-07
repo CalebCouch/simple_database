@@ -193,17 +193,10 @@ impl Filter {
 
 pub type Index = BTreeMap<String, Value>;
 
-#[derive(Default)]
-pub struct IndexBuilder {
-    indexes: Vec<(String, Value)>
-}
+pub struct IndexBuilder {}
 impl IndexBuilder {
-    pub fn new() -> Self {Self::default()}
-    pub fn add<V: Into<Value>>(&mut self, p: &str, v: V) {
-        self.indexes.push((p.to_string(), v.into()));
-    }
-    pub fn finish(self) -> Index {
-        Index::from_iter(self.indexes)
+    pub fn build<V: Into<Value>>(vec: Vec<(&str, V)>) -> Index {
+        Index::from_iter(vec.into_iter().map(|(k, v)| (k.to_string(), v.into())))
     }
 }
 
