@@ -112,6 +112,7 @@ impl From<usize> for Value {fn from(v: usize) -> Self {Value::U64(v as u64)}}
 impl From<DateTime<Utc>> for Value {fn from(v: DateTime<Utc>) -> Self {Value::U64(v.timestamp() as u64)}}
 impl From<F64> for Value {fn from(v: F64) -> Self {Value::F64(v)}}
 impl From<String> for Value {fn from(v: String) -> Self {Value::r#String(v)}}
+impl From<&str> for Value {fn from(v: &str) -> Self {Value::r#String(v.to_string())}}
 impl From<bool> for Value {fn from(v: bool) -> Self {Value::Bool(v)}}
 impl From<Vec<u8>> for Value {fn from(v: Vec<u8>) -> Self {Value::Bytes(v)}}
 impl<V: Into<Value>> From<Vec<V>> for Value {fn from(v: Vec<V>) -> Self {Value::Array(v.into_iter().map(|v| v.into()).collect())}}
