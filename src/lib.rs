@@ -8,11 +8,6 @@ pub use traits::{
     KeyValue,
 };
 
-#[cfg(feature = "leveldb")]
-mod level_store;
-#[cfg(feature = "leveldb")]
-pub use level_store::LevelStore;
-
 #[cfg(feature = "rusqlite")]
 mod sqlite_store;
 #[cfg(feature = "rusqlite")]

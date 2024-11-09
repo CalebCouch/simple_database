@@ -302,98 +302,99 @@ pub const ALL: &str = "ALL";
 
 impl Database {
     pub fn location(&self) -> PathBuf {self.location.clone()}
-    pub fn new<KVS: KeyValueStore + 'static>(location: PathBuf) -> Result<Self, Error> {
-        Ok(Database{store: Box::new(KVS::new(location.clone())?), location})
+    pub async fn new<KVS: KeyValueStore + 'static>(location: PathBuf) -> Result<Self, Error> {
+        Ok(Database{store: Box::new(KVS::new(location.clone()).await?), location})
     }
 
-    pub fn get_raw(&self, pk: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        Ok(self.store.get_partition(PathBuf::from(MAIN))
-            .map(|db| db.get(pk)).transpose()?.flatten())
+    pub async fn get_raw(&self, pk: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        Ok(if let Some(db) = self.store.get_partition(&PathBuf::from(MAIN)).await {
+            db.get(pk).await?
+        } else {None})
     }
 
-    pub fn get<I: Indexable + for<'a> Deserialize<'a>>(&self, pk: &[u8]) -> Result<Option<I>, Error> {
-        Ok(self.get_raw(pk)?.map(|item| {
+    pub async fn get<I: Indexable + for<'a> Deserialize<'a>>(&self, pk: &[u8]) -> Result<Option<I>, Error> {
+        Ok(self.get_raw(pk).await?.map(|item| {
             serde_json::from_slice::<I>(&item)
         }).transpose()?)
     }
 
-    pub fn get_all<I: Indexable + for<'a> Deserialize<'a>>(&self) -> Result<Vec<I>, Error> {
-        Ok(if let Some(db) = self.store.get_partition(PathBuf::from(MAIN)) {
-            db.values()?.into_iter().map(|item| Ok::<I, Error>(serde_json::from_slice::<I>(&item)?)).collect::<Result<Vec<I>, Error>>()?
+    pub async fn get_all<I: Indexable + for<'a> Deserialize<'a>>(&self) -> Result<Vec<I>, Error> {
+        Ok(if let Some(db) = self.store.get_partition(&PathBuf::from(MAIN)).await {
+            db.values().await?.into_iter().map(|item| Ok::<I, Error>(serde_json::from_slice::<I>(&item)?)).collect::<Result<Vec<I>, Error>>()?
         } else {Vec::new()})
     }
 
-    pub fn keys(&self) -> Result<Vec<Vec<u8>>, Error> {
-        Ok(if let Some(db) = self.store.get_partition(PathBuf::from(MAIN)) {
-            db.keys()?
+    pub async fn keys(&self) -> Result<Vec<Vec<u8>>, Error> {
+        Ok(if let Some(db) = self.store.get_partition(&PathBuf::from(MAIN)).await {
+            db.keys().await?
         } else {Vec::new()})
     }
 
-    fn add(partition: &mut dyn KeyValueStore, key: &[u8], value: Vec<u8>) -> Result<(), Error> {
-        if let Some(values) = partition.get(key)? {
+    async fn add(partition: &dyn KeyValueStore, key: &[u8], value: Vec<u8>) -> Result<(), Error> {
+        if let Some(values) = partition.get(key).await? {
             let mut values: Vec<Vec<u8>> = serde_json::from_slice(&values)?;
             values.push(value);
-            partition.set(key, &serde_json::to_vec(&values)?)?;
+            partition.set(key, &serde_json::to_vec(&values)?).await?;
         } else {
-            partition.set(key, &serde_json::to_vec(&vec![value])?)?;
+            partition.set(key, &serde_json::to_vec(&vec![value])?).await?;
         }
         Ok(())
     }
 
-    fn remove(partition: &mut dyn KeyValueStore, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        if let Some(values) = partition.get(key)? {
+    async fn remove(partition: &dyn KeyValueStore, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        if let Some(values) = partition.get(key).await? {
             let mut values: Vec<Vec<u8>> = serde_json::from_slice(&values)?;
             values.retain(|v| v != value);
             if !values.is_empty() {
-                partition.set(key, &serde_json::to_vec(&values)?)?;
+                partition.set(key, &serde_json::to_vec(&values)?).await?;
             } else {
-                partition.delete(key)?;
+                partition.delete(key).await?;
             }
         }
         Ok(())
     }
 
-    pub fn set<I: Indexable + Serialize>(&mut self, item: &I) -> Result<(), Error> {
+    pub async fn set<I: Indexable + Serialize>(&mut self, item: &I) -> Result<(), Error> {
         let pk = item.primary_key();
-        self.delete(&pk)?;
+        self.delete(&pk).await?;
         let db = &mut self.store;
         let mut keys = item.secondary_keys();
         keys.insert(I::PRIMARY_KEY.to_string(), pk.clone().into());
         keys.insert("timestamp_stored".to_string(), Utc::now().into());
-        db.partition(PathBuf::from(MAIN))?.set(&pk, &serde_json::to_vec(item)?)?;
-        db.partition(PathBuf::from(INDEX))?.set(&pk, &serde_json::to_vec(&keys)?)?;
+        db.partition(PathBuf::from(MAIN)).await?.set(&pk, &serde_json::to_vec(item)?).await?;
+        db.partition(PathBuf::from(INDEX)).await?.set(&pk, &serde_json::to_vec(&keys)?).await?;
         for (key, value) in keys.iter() {
-            let partition = db.partition(PathBuf::from(&format!("__{}__", key)))?;
+            let partition = db.partition(PathBuf::from(&format!("__{}__", key))).await?;
             let value = serde_json::to_vec(&value)?;
-            Self::add(partition, &value, pk.clone())?;
-            Self::add(partition, ALL.as_bytes(), pk.clone())?;
+            Self::add(&*partition, &value, pk.clone()).await?;
+            Self::add(&*partition, ALL.as_bytes(), pk.clone()).await?;
         }
         Ok(())
     }
 
-    pub fn delete(&mut self, pk: &[u8]) -> Result<(), Error> {
+    pub async fn delete(&mut self, pk: &[u8]) -> Result<(), Error> {
         let db = &mut self.store;
-        db.partition(PathBuf::from(MAIN))?.delete(pk)?;
-        let index_db = db.partition(PathBuf::from(INDEX))?;
-        if let Some(index) = index_db.get(pk)? {
-            index_db.delete(pk)?;
+        db.partition(PathBuf::from(MAIN)).await?.delete(pk).await?;
+        let index_db = db.partition(PathBuf::from(INDEX)).await?;
+        if let Some(index) = index_db.get(pk).await? {
+            index_db.delete(pk).await?;
             let keys: Index = serde_json::from_slice(&index)?;
             for (key, value) in keys.iter() {
-                let partition = db.partition(PathBuf::from(&format!("__{}__", key)))?;
+                let partition = db.partition(PathBuf::from(&format!("__{}__", key))).await?;
                 let value = serde_json::to_vec(value)?;
-                Self::remove(partition, &value, pk)?;
-                Self::remove(partition, ALL.as_bytes(), pk)?;
+                Self::remove(&*partition, &value, pk).await?;
+                Self::remove(&*partition, ALL.as_bytes(), pk).await?;
             }
         }
         Ok(())
     }
 
-    pub fn clear(&mut self) -> Result<(), Error> {
-        self.store.clear()?;
+    pub async fn clear(&mut self) -> Result<(), Error> {
+        self.store.clear().await?;
         Ok(())
     }
 
-    pub fn query<I: Indexable + for<'a> Deserialize<'a>>(
+    pub async fn query<I: Indexable + for<'a> Deserialize<'a>>(
         &self,
         filters: &Filters,
         sort_options: Option<SortOptions>
@@ -410,7 +411,7 @@ impl Database {
             }
             None
         }) {
-            return Ok((self.get(pk)?.map(|r| vec![r]).unwrap_or(vec![]), None));
+            return Ok((self.get(pk).await?.map(|r| vec![r]).unwrap_or(vec![]), None));
         }
 
 
@@ -421,36 +422,36 @@ impl Database {
         let partition_name = PathBuf::from(format!("__{}__",
             db_filters.first().unwrap_or(&sort_options.property)
         ));
-        let partition = if let Some(p) = db.get_partition(partition_name) {p} else {return none();};
-        let index = if let Some(p) = db.get_partition(PathBuf::from(INDEX)) {p} else {return none();};
+        let partition = if let Some(p) = db.get_partition(&partition_name).await {p} else {return none();};
+        let index = if let Some(p) = db.get_partition(&PathBuf::from(INDEX)).await {p} else {return none();};
 
-        let all = if let Some(p) = partition.get(ALL.as_bytes())? {
+        let all = if let Some(p) = partition.get(ALL.as_bytes()).await? {
             serde_json::from_slice::<Vec<Vec<u8>>>(&p)?
         } else {return none();};
-        let mut values = all.into_iter().map(|pk| {
-            let keys = index.get(&pk)?.ok_or(
+
+        let mut values: Vec<(Vec<u8>, Value)> = vec![];
+        for pk in all {
+            let keys = index.get(&pk).await?.ok_or(
                 Error::err("database.query", "Indexed value not found in index")
             )?;
-            Ok((pk, serde_json::from_slice(&keys)?))
-        }).collect::<Result<Vec<(Vec<u8>, Index)>, Error>>()?
-        .into_iter().filter(|(_, keys)| {
-            filters.iter().all(|(prop, filter)| {
+            let keys = serde_json::from_slice::<Index>(&keys)?;
+            if filters.iter().all(|(prop, filter)| {
                 if let Some(value) = keys.get(prop) {
                     filter.filter(value).unwrap_or(false)
                 } else {false}
-            })
-        }).collect::<Vec<(Vec<u8>, Index)>>().into_iter().map(|(pk, mut keys)| {
-             let main = db.get_partition(PathBuf::from(MAIN)).ok_or(
-                Error::err("database.query", "Indexed value not found in main")
-            )?;
-            let sp = keys.remove(&sort_options.property).ok_or(
-                Error::err("database.query", "Sort property not found in matched value")
-            )?;
+            }) {
+                let main = db.get_partition(&PathBuf::from(MAIN)).await.ok_or(
+                    Error::err("database.query", "Indexed value not found in main")
+                )?;
+                let sp = keys.get(&sort_options.property).ok_or(
+                    Error::err("database.query", "Sort property not found in matched value")
+                )?.clone();
 
-            Ok(main.get(&pk)?.map(|i| (i, sp)))
-        }).collect::<Result<Vec<Option<(Vec<u8>, Value)>>, Error>>()?
-        .into_iter().flatten()
-        .collect::<Vec<(Vec<u8>, Value)>>();
+                if let Some(i) = main.get(&pk).await? {
+                    values.push((i, sp));
+                }
+            }
+        }
 
         values.sort_by(|a, b| {
             if sort_options.direction == SortDirection::Ascending {
@@ -474,22 +475,34 @@ impl Database {
             cursor))
         }
     }
+
+    pub async fn debug(&self) -> Result<String, Error> {
+        Ok(format!("{:#?}",
+            if let Some(index) = self.store.get_partition(&PathBuf::from(INDEX)).await {
+                let mut index = index.values().await?.into_iter().map(|keys|
+                    Ok(serde_json::from_slice::<Index>(&keys)?)
+                ).collect::<Result<Vec<Index>, Error>>()?;
+                index.sort_by_key(|i| i.get("timestamp_stored").unwrap().clone());
+                index
+            } else {Vec::new()}
+        ))
+    }
 }
 
 impl std::fmt::Debug for Database {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Database")
         .field("location", &self.location())
-        .field("items", &self.store.get_partition(PathBuf::from(INDEX)).map(|index| {
-            let mut index = index.values().unwrap().into_iter().map(|keys|
-                serde_json::from_slice::<Index>(&keys).unwrap()
-              //.into_iter().map(|(key, value)|
-              //    (key, format!(
-              //).collect()
-            ).collect::<Vec<Index>>();
-            index.sort_by_key(|i| i.get("timestamp_stored").unwrap().clone());
-            index
-        }).unwrap_or_default())
+      //.field("items", &self.store.get_partition(&PathBuf::from(INDEX)).await.map(|index| {
+      //    let mut index = index.values().unwrap().into_iter().map(|keys|
+      //        serde_json::from_slice::<Index>(&keys).unwrap()
+      //      //.into_iter().map(|(key, value)|
+      //      //    (key, format!(
+      //      //).collect()
+      //    ).collect::<Vec<Index>>();
+      //    index.sort_by_key(|i| i.get("timestamp_stored").unwrap().clone());
+      //    index
+      //}).unwrap_or_default())
         .finish()
     }
 }

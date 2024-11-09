@@ -3,10 +3,6 @@ pub enum Error {
     #[error(transparent)]
     SerdeJson(#[from] serde_json::Error),
 
-    #[cfg(feature = "leveldb")]
-    #[error(transparent)]
-    LevelDB(#[from] leveldb::error::Error),
-
     #[cfg(feature = "rusqlite")]
     #[error(transparent)]
     HexError(#[from] hex::FromHexError),
