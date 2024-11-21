@@ -478,13 +478,16 @@ impl Database {
 
     pub async fn debug(&self) -> Result<String, Error> {
         Ok(format!("{:#?}",
-            if let Some(index) = self.store.get_partition(&PathBuf::from(INDEX)).await {
-                let mut index = index.values().await?.into_iter().map(|keys|
-                    Ok(serde_json::from_slice::<Index>(&keys)?)
-                ).collect::<Result<Vec<Index>, Error>>()?;
-                index.sort_by_key(|i| i.get("timestamp_stored").unwrap().clone());
-                index
-            } else {Vec::new()}
+            (
+                self.location(),
+                if let Some(index) = self.store.get_partition(&PathBuf::from(INDEX)).await {
+                    let mut index = index.values().await?.into_iter().map(|keys|
+                        Ok(serde_json::from_slice::<Index>(&keys)?)
+                    ).collect::<Result<Vec<Index>, Error>>()?;
+                    index.sort_by_key(|i| i.get("timestamp_stored").unwrap().clone());
+                    index
+                } else {Vec::new()}
+            )
         ))
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "simple-database"
-version = "1.1.6"
+version = "1.1.7"
 edition = "2021"
 description = "A rust crate for simple Key-Value Stores and a simple Indexed Database"
 license = "BSD-3-Clause"
