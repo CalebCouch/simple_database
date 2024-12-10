@@ -132,10 +132,10 @@ impl std::fmt::Debug for Value {
 }
 
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum CmpType { GT, GTE, E, LT, LTE }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum Filter {
     Cmp(Value, CmpType),
     Contains(Value),
@@ -196,55 +196,65 @@ pub type Index = BTreeMap<String, Value>;
 
 pub struct IndexBuilder {}
 impl IndexBuilder {
-    pub fn build<V: Into<Value>>(vec: Vec<(&str, V)>) -> Index {
-        Index::from_iter(vec.into_iter().map(|(k, v)| (k.to_string(), v.into())))
+    pub fn build<V: Into<Value>>(vec: Vec<(&str, V)>) -> Result<Index, Error> {
+        let index = Index::from_iter(vec.into_iter().map(|(k, v)| (k.to_string(), v.into())));
+        if index.contains_key("timestamp_stored") {
+            Err(Error::err("", "'timestamp_stored' is a reserved index"))
+        } else {Ok(index)}
     }
 }
 
-pub type Filters = BTreeMap<String, Filter>;
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Filters(pub BTreeMap<String, Filter>);
 
-pub struct FiltersBuilder {}
-impl FiltersBuilder {
-    pub fn add(filters: &mut Filters, property: &str, ad_filter: Filter) {
-        if let Some(filter) = filters.get_mut(property) {
+impl Filters {
+    pub fn new(vec: Vec<(&str, Filter)>) -> Filters {
+        Filters(BTreeMap::from_iter(vec.into_iter().map(|(k, f)| (k.to_string(), f))))
+    }
+    pub fn add(&mut self, property: &str, ad_filter: Filter) {
+        if let Some(filter) = self.0.get_mut(property) {
             if let Filter::All(ref mut filters) = filter {
                 filters.push(ad_filter);
             } else {
                 *filter = Filter::All(vec![filter.clone(), ad_filter]);
             }
         } else {
-            filters.insert(property.to_string(), ad_filter);
+            self.0.insert(property.to_string(), ad_filter);
         }
     }
-    pub fn combine(a_filters: &Filters, b_filters: &Filters, or: bool) -> Filters {
+    pub fn combine(&self, b_filters: &Filters, or: bool) -> Filters {
         let mut filters = Vec::new();
-        for (a_name, a_filter) in a_filters {
-            if let Some(b_filter) = b_filters.get(a_name) {
+        for (a_name, a_filter) in &self.0 {
+            if let Some(b_filter) = b_filters.0.get(a_name) {
                 let vec = vec![b_filter.clone(), a_filter.clone()];
                 filters.push((a_name.to_string(), if or {Filter::Any(vec)} else {Filter::All(vec)}));
             } else {
                 filters.push((a_name.to_string(), a_filter.clone()));
             }
         }
-        for (b_name, b_filter) in b_filters {
-            if !a_filters.contains_key(b_name) {
+        for (b_name, b_filter) in &b_filters.0 {
+            if !self.0.contains_key(b_name) {
                 filters.push((b_name.to_string(), b_filter.clone()));
             }
         }
-        Filters::from_iter(filters)
+        Filters(BTreeMap::from_iter(filters))
     }
-    pub fn build(vec: Vec<(&str, Filter)>) -> Filters {
-        Filters::from_iter(vec.into_iter().map(|(k, f)| (k.to_string(), f)))
+    pub fn filter(&self, index: &Index) -> bool {
+        self.0.iter().all(|(prop, filter)| {
+            if let Some(value) = index.get(prop) {
+                filter.filter(value).unwrap_or(false)
+            } else {false}
+        })
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SortDirection {
   Descending = -1,
   Ascending = 1
 }
 
-#[derive( Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SortOptions {
     direction: SortDirection,
     property: String,
@@ -260,6 +270,20 @@ impl SortOptions {
             limit: None,
             cursor_key: None
         }
+    }
+
+    pub fn sort<T: Indexable>(&self, values: &mut [T]) -> Result<(), Error> {
+        if values.iter().any(|a| !a.index().contains_key(&self.property)) {
+            return Err(Error::err("", "Sort Property Not Found In All Values"));
+        }
+        values.sort_by(|a, b| {
+            let (f, s) = if self.direction == SortDirection::Ascending {(a, b)} else {(b, a)};
+            f.index().get(&self.property).unwrap()
+            .partial_cmp(
+                s.index().get(&self.property).unwrap()
+            ).unwrap_or(Ordering::Equal)
+        });
+        Ok(())
     }
 }
 
@@ -354,11 +378,14 @@ impl Database {
         Ok(())
     }
 
-    pub async fn set<I: Indexable + Serialize>(&mut self, item: &I) -> Result<(), Error> {
+    pub async fn set<I: Indexable + Serialize>(&self, item: &I) -> Result<(), Error> {
         let pk = item.primary_key();
         self.delete(&pk).await?;
-        let db = &mut self.store;
+        let db = &self.store;
         let mut keys = item.secondary_keys();
+        if keys.contains_key(I::PRIMARY_KEY) || keys.contains_key("timestamp_stored") {
+            return Err(Error::err("", &format!("'{}' and 'timestamp_stored' are reserved indexes", I::PRIMARY_KEY)));
+        }
         keys.insert(I::PRIMARY_KEY.to_string(), pk.clone().into());
         keys.insert("timestamp_stored".to_string(), Utc::now().into());
         db.partition(PathBuf::from(MAIN)).await?.set(&pk, &serde_json::to_vec(item)?).await?;
@@ -372,8 +399,8 @@ impl Database {
         Ok(())
     }
 
-    pub async fn delete(&mut self, pk: &[u8]) -> Result<(), Error> {
-        let db = &mut self.store;
+    pub async fn delete(&self, pk: &[u8]) -> Result<(), Error> {
+        let db = &self.store;
         db.partition(PathBuf::from(MAIN)).await?.delete(pk).await?;
         let index_db = db.partition(PathBuf::from(INDEX)).await?;
         if let Some(index) = index_db.get(pk).await? {
@@ -389,7 +416,7 @@ impl Database {
         Ok(())
     }
 
-    pub async fn clear(&mut self) -> Result<(), Error> {
+    pub async fn clear(&self) -> Result<(), Error> {
         self.store.clear().await?;
         Ok(())
     }
@@ -403,8 +430,8 @@ impl Database {
         let none = || Ok((Vec::new(), None));
         let db = &self.store;
 
-        if let Some(pk) = filters.iter().find_map(|(p, f)| {
-            if p == "primary_key" {
+        if let Some(pk) = filters.0.iter().find_map(|(p, f)| {
+            if p == I::PRIMARY_KEY {
                 if let Filter::Cmp(Value::Bytes(value), CmpType::E) = f {
                     return Some(value);
                 }
@@ -415,7 +442,7 @@ impl Database {
         }
 
 
-        let db_filters: Vec<String> = filters.iter().filter_map(|(p, f)|
+        let db_filters: Vec<String> = filters.0.iter().filter_map(|(p, f)|
             Some(p.to_string()).filter(|_| f.is_equal())
         ).collect();
 
@@ -435,11 +462,7 @@ impl Database {
                 Error::err("database.query", "Indexed value not found in index")
             )?;
             let keys = serde_json::from_slice::<Index>(&keys)?;
-            if filters.iter().all(|(prop, filter)| {
-                if let Some(value) = keys.get(prop) {
-                    filter.filter(value).unwrap_or(false)
-                } else {false}
-            }) {
+            if filters.filter(&keys) {
                 let main = db.get_partition(&PathBuf::from(MAIN)).await.ok_or(
                     Error::err("database.query", "Indexed value not found in main")
                 )?;
@@ -496,16 +519,6 @@ impl std::fmt::Debug for Database {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Database")
         .field("location", &self.location())
-      //.field("items", &self.store.get_partition(&PathBuf::from(INDEX)).await.map(|index| {
-      //    let mut index = index.values().unwrap().into_iter().map(|keys|
-      //        serde_json::from_slice::<Index>(&keys).unwrap()
-      //      //.into_iter().map(|(key, value)|
-      //      //    (key, format!(
-      //      //).collect()
-      //    ).collect::<Vec<Index>>();
-      //    index.sort_by_key(|i| i.get("timestamp_stored").unwrap().clone());
-      //    index
-      //}).unwrap_or_default())
         .finish()
     }
 }

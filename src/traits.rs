@@ -31,4 +31,9 @@ pub trait Indexable {
     const DEFAULT_SORT: &'static str = Self::PRIMARY_KEY;
     fn primary_key(&self) -> Vec<u8>;
     fn secondary_keys(&self) -> Index {Index::default()}
+    fn index(&self) -> Index {
+        let mut index = self.secondary_keys();
+        index.insert(Self::PRIMARY_KEY.to_string(), hex::encode(self.primary_key()).into());
+        index
+    }
 }
