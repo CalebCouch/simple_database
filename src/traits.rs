@@ -4,6 +4,7 @@ use super::database::Index;
 
 use std::path::{PathBuf, Path};
 
+use serde::{Serialize, Deserialize};
 use dyn_clone::{clone_trait_object, DynClone};
 
 pub type KeyValue = Vec<(Vec<u8>, Vec<u8>)>;
@@ -36,4 +37,8 @@ pub trait Indexable {
         index.insert(Self::PRIMARY_KEY.to_string(), hex::encode(self.primary_key()).into());
         index
     }
+}
+
+pub trait Field: Serialize + for<'a> Deserialize<'a> + std::fmt::Debug {
+    fn as_bytes(&self) -> Vec<u8>;
 }

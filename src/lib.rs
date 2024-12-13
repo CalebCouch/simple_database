@@ -6,6 +6,7 @@ pub use traits::{
     KeyValueStore,
     Indexable,
     KeyValue,
+    Field
 };
 
 #[cfg(feature = "rusqlite")]
@@ -19,3 +20,6 @@ pub use memory_store::MemoryStore;
 
 pub mod database;
 pub use database::Database;
+
+pub mod state;
+pub use state::State;
